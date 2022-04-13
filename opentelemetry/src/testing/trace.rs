@@ -71,13 +71,20 @@ pub struct TestSpanExporter {
 
 #[async_trait]
 impl SpanExporter for TestSpanExporter {
-    async fn export(&mut self, batch: Vec<SpanData>) -> ExportResult {
+    fn export(
+        &mut self,
+        batch: Vec<SpanData>,
+    ) -> futures::future::BoxFuture<'static, ExportResult> {
         for span_data in batch {
-            self.tx_export
+            if let Err(err) = self
+                .tx_export
                 .send(span_data)
-                .map_err::<TestExportError, _>(Into::into)?;
+                .map_err::<TestExportError, _>(Into::into)
+            {
+                return Box::pin(std::future::ready(Err(Into::into(err))));
+            }
         }
-        Ok(())
+        Box::pin(std::future::ready(Ok(())))
     }
 
     fn shutdown(&mut self) {
@@ -103,13 +110,20 @@ pub struct TokioSpanExporter {
 
 #[async_trait]
 impl SpanExporter for TokioSpanExporter {
-    async fn export(&mut self, batch: Vec<SpanData>) -> ExportResult {
+    fn export(
+        &mut self,
+        batch: Vec<SpanData>,
+    ) -> futures::future::BoxFuture<'static, ExportResult> {
         for span_data in batch {
-            self.tx_export
+            if let Err(err) = self
+                .tx_export
                 .send(span_data)
-                .map_err::<TestExportError, _>(Into::into)?;
+                .map_err::<TestExportError, _>(Into::into)
+            {
+                return Box::pin(std::future::ready(Err(Into::into(err))));
+            }
         }
-        Ok(())
+        Box::pin(std::future::ready(Ok(())))
     }
 
     fn shutdown(&mut self) {

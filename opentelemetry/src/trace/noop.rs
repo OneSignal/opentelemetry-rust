@@ -195,8 +195,11 @@ impl NoopSpanExporter {
 
 #[async_trait]
 impl SpanExporter for NoopSpanExporter {
-    async fn export(&mut self, _batch: Vec<SpanData>) -> ExportResult {
-        Ok(())
+    fn export(
+        &mut self,
+        _batch: Vec<SpanData>,
+    ) -> futures::future::BoxFuture<'static, ExportResult> {
+        Box::pin(std::future::ready(Ok(())))
     }
 }
 

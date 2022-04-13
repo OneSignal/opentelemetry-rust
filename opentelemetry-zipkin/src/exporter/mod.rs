@@ -2,6 +2,7 @@ mod model;
 mod uploader;
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use http::Uri;
 use model::endpoint::Endpoint;
 use opentelemetry::sdk::resource::ResourceDetector;
@@ -32,7 +33,7 @@ pub struct Exporter {
 }
 
 impl Exporter {
-    fn new(local_endpoint: Endpoint, client: Box<dyn HttpClient>, collector_endpoint: Uri) -> Self {
+    fn new(local_endpoint: Endpoint, client: Arc<dyn HttpClient>, collector_endpoint: Uri) -> Self {
         Exporter {
             local_endpoint,
             uploader: uploader::Uploader::new(client, collector_endpoint),
@@ -52,26 +53,26 @@ pub struct ZipkinPipelineBuilder {
     service_addr: Option<SocketAddr>,
     collector_endpoint: String,
     trace_config: Option<sdk::trace::Config>,
-    client: Option<Box<dyn HttpClient>>,
+    client: Option<Arc<dyn HttpClient>>,
 }
 
 impl Default for ZipkinPipelineBuilder {
     fn default() -> Self {
         ZipkinPipelineBuilder {
             #[cfg(feature = "reqwest-blocking-client")]
-            client: Some(Box::new(reqwest::blocking::Client::new())),
+            client: Some(Arc::new(reqwest::blocking::Client::new())),
             #[cfg(all(
                 not(feature = "reqwest-blocking-client"),
                 not(feature = "surf-client"),
                 feature = "reqwest-client"
             ))]
-            client: Some(Box::new(reqwest::Client::new())),
+            client: Some(Arc::new(reqwest::Client::new())),
             #[cfg(all(
                 not(feature = "reqwest-client"),
                 not(feature = "reqwest-blocking-client"),
                 feature = "surf-client"
             ))]
-            client: Some(Box::new(surf::Client::new())),
+            client: Some(Arc::new(surf::Client::new())),
             #[cfg(all(
                 not(feature = "reqwest-client"),
                 not(feature = "surf-client"),
@@ -186,7 +187,7 @@ impl ZipkinPipelineBuilder {
 
     /// Assign client implementation
     pub fn with_http_client<T: HttpClient + 'static>(mut self, client: T) -> Self {
-        self.client = Some(Box::new(client));
+        self.client = Some(Arc::new(client));
         self
     }
 
@@ -209,16 +210,28 @@ impl ZipkinPipelineBuilder {
     }
 }
 
+async fn zipkin_export(
+    batch: Vec<trace::SpanData>,
+    uploader: uploader::Uploader,
+    local_endpoint: Endpoint,
+) -> trace::ExportResult {
+    let zipkin_spans = batch
+        .into_iter()
+        .map(|span| model::into_zipkin_span(local_endpoint.clone(), span))
+        .collect();
+
+    uploader.upload(zipkin_spans).await
+}
+
 #[async_trait]
 impl trace::SpanExporter for Exporter {
     /// Export spans to Zipkin collector.
-    async fn export(&mut self, batch: Vec<trace::SpanData>) -> trace::ExportResult {
-        let zipkin_spans = batch
-            .into_iter()
-            .map(|span| model::into_zipkin_span(self.local_endpoint.clone(), span))
-            .collect();
-
-        self.uploader.upload(zipkin_spans).await
+    fn export(&mut self, batch: Vec<trace::SpanData>) -> BoxFuture<'static, trace::ExportResult> {
+        Box::pin(zipkin_export(
+            batch,
+            self.uploader.clone(),
+            self.local_endpoint.clone(),
+        ))
     }
 }
 

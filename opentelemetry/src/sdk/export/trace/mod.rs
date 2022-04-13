@@ -3,7 +3,7 @@ use crate::{
     sdk,
     trace::{Event, Link, SpanContext, SpanId, SpanKind, StatusCode, TraceError},
 };
-use async_trait::async_trait;
+use futures::future::BoxFuture;
 #[cfg(feature = "serialize")]
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -23,7 +23,6 @@ pub type ExportResult = Result<(), TraceError>;
 /// The goal of the interface is to minimize burden of implementation for
 /// protocol-dependent telemetry exporters. The protocol exporter is expected to
 /// be primarily a simple telemetry data encoder and transmitter.
-#[async_trait]
 pub trait SpanExporter: Send + Debug {
     /// Exports a batch of readable spans. Protocol exporters that will
     /// implement this function are typically expected to serialize and transmit
@@ -37,7 +36,7 @@ pub trait SpanExporter: Send + Debug {
     ///
     /// Any retry logic that is required by the exporter is the responsibility
     /// of the exporter.
-    async fn export(&mut self, batch: Vec<SpanData>) -> ExportResult;
+    fn export(&mut self, batch: Vec<SpanData>) -> BoxFuture<'static, ExportResult>;
 
     /// Shuts down the exporter. Called when SDK is shut down. This is an
     /// opportunity for exporter to do any cleanup required.

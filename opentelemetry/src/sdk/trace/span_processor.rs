@@ -309,17 +309,24 @@ impl<R: TraceRuntime> BatchSpanProcessor<R> {
                         spans.push(span);
 
                         if spans.len() == config.max_export_batch_size {
-                            let result = export_with_timeout(
-                                config.max_export_timeout,
-                                exporter.as_mut(),
-                                &timeout_runtime,
-                                spans.split_off(0),
-                            )
-                            .await;
+                            let export = exporter.export(spans.split_off(0));
+                            let timeout = timeout_runtime.delay(config.max_export_timeout);
+                            let time_out = config.max_export_timeout;
 
-                            if let Err(err) = result {
-                                global::handle_error(err);
-                            }
+                            timeout_runtime.spawn(Box::pin(async move {
+                                // pin_mut!(export);
+                                // pin_mut!(timeout);
+                                let result = match futures::future::select(export, timeout).await {
+                                    Either::Left((export_res, _)) => export_res,
+                                    Either::Right((_, _)) => {
+                                        ExportResult::Err(TraceError::ExportTimedOut(time_out))
+                                    }
+                                };
+
+                                if let Err(err) = result {
+                                    global::handle_error(err);
+                                }
+                            }));
                         }
                     }
                     // Span batch interval time reached or a force flush has been invoked, export current spans.

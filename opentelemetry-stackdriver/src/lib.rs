@@ -5,6 +5,7 @@
 // https://github.com/danburkert/prost/pull/291
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use futures::stream::StreamExt;
 use opentelemetry::{
     sdk::export::trace::{ExportResult, SpanData, SpanExporter},
@@ -216,15 +217,15 @@ impl StackDriverExporter {
 
 #[async_trait]
 impl SpanExporter for StackDriverExporter {
-    async fn export(&mut self, batch: Vec<SpanData>) -> ExportResult {
+    fn export(&mut self, batch: Vec<SpanData>) -> BoxFuture<'static, ExportResult> {
         match self.tx.try_send(batch) {
             Err(e) => {
                 log::error!("Unable to send to export_inner {:?}", e);
-                Err(e.into())
+                Box::pin(std::future::ready(Err(e.into())))
             }
             Ok(()) => {
                 self.pending_count.fetch_add(1, Ordering::Relaxed);
-                Ok(())
+                Box::pin(std::future::ready(Ok(())))
             }
         }
     }

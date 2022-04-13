@@ -5,6 +5,7 @@ pub use model::ApiVersion;
 pub use model::Error;
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use http::{Method, Request, Uri};
 use itertools::Itertools;
 use opentelemetry::sdk::export::trace;
@@ -29,7 +30,7 @@ const DATADOG_TRACE_COUNT_HEADER: &str = "X-Datadog-Trace-Count";
 /// Datadog span exporter
 #[derive(Debug)]
 pub struct DatadogExporter {
-    client: Box<dyn HttpClient>,
+    client: Arc<dyn HttpClient>,
     request_url: Uri,
     service_name: String,
     version: ApiVersion,
@@ -40,7 +41,7 @@ impl DatadogExporter {
         service_name: String,
         request_url: Uri,
         version: ApiVersion,
-        client: Box<dyn HttpClient>,
+        client: Arc<dyn HttpClient>,
     ) -> Self {
         DatadogExporter {
             client,
@@ -48,6 +49,21 @@ impl DatadogExporter {
             service_name,
             version,
         }
+    }
+
+    fn build_request(&self, batch: Vec<SpanData>) -> Result<http::Request<Vec<u8>>, TraceError> {
+        let traces: Vec<Vec<SpanData>> = group_into_traces(batch);
+        let trace_count = traces.len();
+        let data = self.version.encode(&self.service_name, traces)?;
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(self.request_url.clone())
+            .header(http::header::CONTENT_TYPE, self.version.content_type())
+            .header(DATADOG_TRACE_COUNT_HEADER, trace_count)
+            .body(data)
+            .map_err::<Error, _>(Into::into)?;
+
+        Ok(req)
     }
 }
 
@@ -63,7 +79,7 @@ pub struct DatadogPipelineBuilder {
     agent_endpoint: String,
     trace_config: Option<sdk::trace::Config>,
     version: ApiVersion,
-    client: Option<Box<dyn HttpClient>>,
+    client: Option<Arc<dyn HttpClient>>,
 }
 
 impl Default for DatadogPipelineBuilder {
@@ -84,15 +100,15 @@ impl Default for DatadogPipelineBuilder {
                 not(feature = "reqwest-blocking-client"),
                 feature = "surf-client"
             ))]
-            client: Some(Box::new(surf::Client::new())),
+            client: Some(Arc::new(surf::Client::new())),
             #[cfg(all(
                 not(feature = "surf-client"),
                 not(feature = "reqwest-blocking-client"),
                 feature = "reqwest-client"
             ))]
-            client: Some(Box::new(reqwest::Client::new())),
+            client: Some(Arc::new(reqwest::Client::new())),
             #[cfg(feature = "reqwest-blocking-client")]
-            client: Some(Box::new(reqwest::blocking::Client::new())),
+            client: Some(Arc::new(reqwest::blocking::Client::new())),
         }
     }
 }
@@ -206,7 +222,7 @@ impl DatadogPipelineBuilder {
     /// Choose the http client used by uploader
     pub fn with_http_client<T: HttpClient + 'static>(
         mut self,
-        client: Box<dyn HttpClient>,
+        client: Arc<dyn HttpClient>,
     ) -> Self {
         self.client = Some(client);
         self
@@ -234,22 +250,25 @@ fn group_into_traces(spans: Vec<SpanData>) -> Vec<Vec<SpanData>> {
         .collect()
 }
 
+async fn send_request(
+    client: Arc<dyn HttpClient>,
+    request: http::Request<Vec<u8>>,
+) -> trace::ExportResult {
+    let _ = client.send(request).await?.error_for_status()?;
+    Ok(())
+}
+
 #[async_trait]
 impl trace::SpanExporter for DatadogExporter {
     /// Export spans to datadog-agent
-    async fn export(&mut self, batch: Vec<SpanData>) -> trace::ExportResult {
-        let traces: Vec<Vec<SpanData>> = group_into_traces(batch);
-        let trace_count = traces.len();
-        let data = self.version.encode(&self.service_name, traces)?;
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri(self.request_url.clone())
-            .header(http::header::CONTENT_TYPE, self.version.content_type())
-            .header(DATADOG_TRACE_COUNT_HEADER, trace_count)
-            .body(data)
-            .map_err::<Error, _>(Into::into)?;
-        let _ = self.client.send(req).await?.error_for_status()?;
-        Ok(())
+    fn export(&mut self, batch: Vec<SpanData>) -> BoxFuture<'static, trace::ExportResult> {
+        let request = match self.build_request(batch) {
+            Ok(req) => req,
+            Err(err) => return Box::pin(std::future::ready(Err(err))),
+        };
+
+        let client = self.client.clone();
+        Box::pin(send_request(client, request))
     }
 }
 
