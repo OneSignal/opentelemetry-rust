@@ -666,9 +666,12 @@ mod tests {
         D: Fn(Duration) -> DS + 'static + Send + Sync,
         DS: Future<Output = ()> + Send + Sync + 'static,
     {
-        async fn export(&mut self, _batch: Vec<SpanData>) -> ExportResult {
-            (self.delay_fn)(self.delay_for).await;
-            Ok(())
+        fn export(
+            &mut self,
+            _batch: Vec<SpanData>,
+        ) -> futures::future::BoxFuture<'static, ExportResult> {
+            use futures::FutureExt;
+            Box::pin((self.delay_fn)(self.delay_for).map(|_| Ok(())))
         }
     }
 
